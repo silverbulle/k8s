@@ -39,6 +39,7 @@
 | [03-工作负载资源](03-工作负载资源.md) | Pod, ReplicaSet, Deployment, StatefulSet, DaemonSet, Job/CronJob | ~25 分钟 |
 | [04-服务与网络](04-服务与网络.md) | Service, Ingress, DNS, NetworkPolicy | ~20 分钟 |
 | [05-配置与存储](05-配置与存储.md) | ConfigMap, Secret, Volume, PV/PVC, StorageClass | ~20 分钟 |
+| [05b-GPU与高性能互联](05b-GPU与高性能互联.md) | GPU 调度, RDMA, NCCL, 数据并行, 集合通信 | ~30 分钟 |
 
 ### 第三部分：核心业务流程
 
