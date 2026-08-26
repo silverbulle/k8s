@@ -741,28 +741,143 @@ RDMA 通信（接收端）:
 
 ### RDMA 在 K8s 中的使用
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Node (Worker)                                      │
-│                                                     │
-│  ┌───────────────┐         ┌─────────────────────┐  │
-│  │  kubelet      │         │  Mellanox Network   │  │
-│  │               │         │  Operator           │  │
-│  │  Device Plugin│◄────────│  (SR-IOV DP)        │  │
-│  │  Manager      │         │                     │  │
-│  └───────────────┘         │  注册资源:           │  │
-│                            │  rdma/hca: 2        │  │
-│                            │  rdma/hca_handles:  │  │
-│                            │  2000               │  │
-│                            └─────────────────────┘  │
-└─────────────────────────────────────────────────────┘
+GPU 和 RDMA 都走 **K8s Device Plugin API**（`List`/`Allocate`/`PreStart` 生命周期相同），但实现是**两套独立的 DaemonSet**——GPU 一套、RDMA 一套，资源名、识别逻辑、配置 YAML 完全分开。RDMA 侧还分**两种部署模式**可选。
 
-Pod YAML:
-  resources:
-    limits:
-      nvidia.com/gpu: 8
-      rdma/hca: 2              # 申请 2 个 RDMA HCA（网卡）
-      rdma/hca_handles: 2000   # 申请 2000 个 MR handle
+#### 三种 Device Plugin 对比
+
+| 维度 | GPU | RDMA（共享模式） | RDMA（SR-IOV 模式） |
+|------|-----|----------------|-------------------|
+| **插件项目** | `nvidia-device-plugin` | `k8s-rdma-shared-dev-plugin` | `sriov-network-device-plugin` |
+| **资源名** | `nvidia.com/gpu` | `rdma/rdma_shared_device_a` | `rdma/hca`（可配置） |
+| **识别目标** | `/dev/nvidia*` + NVML | `/sys/class/infiniband/*` | PCI 总线 + selectors |
+| **资源粒度** | 1 张 GPU = 1 资源 | 1 个 HCA 端口 = 1 资源（多 Pod 共享） | 1 个 VF = 1 资源 |
+| **隔离方式** | 整卡 / MIG 切分 | verbs PD 软件隔离 | VF 硬件级隔离 |
+| **典型场景** | 任意 GPU 场景 | 单租户、调试 | 多租户生产训练 |
+
+#### 模式 1：k8s-rdma-shared-dev-plugin（共享，无 SR-IOV）
+
+宿主机已有 RDMA 网卡（PF），不开 SR-IOV，多 Pod 通过 verbs API 共享同一块 HCA：
+
+```yaml
+# ConfigMap — selectors 决定哪些 RDMA 设备被识别为资源
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rdma-devices
+data:
+  config.json: |
+    {
+      "configList": [
+        {
+          "resourceName": "rdma_shared_device_a",
+          "rdmaHcaMax": 63,               # 单 HCA 最多被 63 个 Pod 共享
+          "selectors": {
+            "vendors": ["15b3"],          # Mellanox/NVIDIA Networking 厂商 ID
+            "deviceIDs": ["a2dc"]         # ConnectX-7 PF（可省略）
+          }
+        }
+      ]
+    }
+```
+
+**识别流程：**
+
+```
+1. 插件扫 /sys/class/infiniband/ 列出所有内核 RDMA 设备（mlx5_0、mlx5_1...）
+2. 读每个设备的 device/vendor、device/device 文件，用 selectors 过滤
+3. 匹配的设备注册为 rdma/rdma_shared_device_a 资源，容量 = rdmaHcaMax
+4. Allocate() 返回 /dev/infiniband/uverbsX + /dev/infiniband/rdma_cm 挂载
+```
+
+#### 模式 2：sriov-network-device-plugin（SR-IOV 直通）
+
+PF 切成多个 VF，每个 VF 直通一个 Pod，硬件级隔离：
+
+```yaml
+# ConfigMap — selectors 决定哪些 PCI 设备成为 RDMA 资源
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sriovdp-config
+data:
+  config.json: |
+    {
+      "resourceList": [
+        {
+          "resourcePrefix": "rdma",
+          "resourceName": "hca",
+          "selectors": {
+            "vendors": ["15b3"],
+            "deviceIDs": ["101a"],        # ConnectX-7 VF 的 device ID（与 PF 不同！）
+            "isRdma": true,               # 必须是 RDMA 设备
+            "drivers": ["mlx5_core"]
+          }
+        }
+      ]
+    }
+```
+
+**识别流程：**
+
+```
+1. 插件扫 PCI 总线（等价 lspci）
+2. 用 selectors 过滤：vendor=15b3、deviceID=101a（VF 专用 ID）、支持 RDMA、驱动匹配
+3. 匹配的 VF 注册为 rdma/hca 资源，每个 VF = 1 资源
+4. Pod 申请时，配合 sriov-cni 把 VF 移入容器 netns，获得独立 IP/MAC
+```
+
+#### 节点侧手工识别（类比 `nvidia-smi`）
+
+```bash
+# 1. PCI 层：找 RDMA 网卡（PF 和 VF 的 device ID 不同）
+lspci -nn | grep -iE "mellanox|infiniband"
+# 81:00.0 ... Mellanox MT2894 [ConnectX-6 Lx] [15b3:101f]   ← PF
+# 81:00.2 ... Mellanox ConnectX mlx5Gen Virtual Function    ← VF
+
+# 2. RDMA 设备层：列 HCA 及 transport 类型
+ibv_devinfo
+#   hca_id: mlx5_0
+#     transport: InfiniBand (0)        # 或 Ethernet (1) = RoCE
+#     port 1:
+#       state: PORT_ACTIVE
+#       rate: 200 Gb/sec
+
+# 3. RDMA 设备 ↔ netdev 映射
+ibdev2netdev
+# mlx5_0 port 1 ==> ib0 (Up)
+# mlx5_4 port 1 ==> eth4 (Up)          # VF 对应的 netdev
+
+# 4. sysfs 层：查 VF 数量、设备属性
+cat /sys/class/net/eth0/device/sriov_numvfs
+ls /sys/class/infiniband/
+cat /sys/class/infiniband/mlx5_0/ports/1/link_layer   # Ethernet=RoCE / InfiniBand=IB
+cat /sys/class/infiniband/mlx5_0/ports/1/rate          # 速率
+
+# 5. 集群层：kubelet 上报的 RDMA 资源
+kubectl describe node <node> | grep -A5 "Allocatable"
+#   nvidia.com/gpu:                 8
+#   rdma/hca:                       16     # SR-IOV 模式
+#   rdma/rdma_shared_device_a:      63     # shared 模式
+```
+
+#### 两种 RDMA 模式选择
+
+| 维度 | Shared | SR-IOV |
+|------|--------|--------|
+| **隔离性** | verbs PD 软件隔离，共享 HCA | VF 硬件级隔离 |
+| **网络功能** | Pod 共享 HCA 的 IP/端口空间 | 每 VF 独立 MAC/IP，可走 NetworkPolicy |
+| **性能** | 受同 HCA 其他 Pod 影响 | 独占 VF，性能可预期 |
+| **部署复杂度** | 低，只挂字符设备 | 高，需开 SR-IOV + CNI 配合 |
+| **典型场景** | 单租户、调试、轻量使用 | 多租户生产训练集群 |
+
+#### Pod 申请 RDMA 资源
+
+```yaml
+resources:
+  limits:
+    nvidia.com/gpu: 8                    # GPU Device Plugin 分配
+    rdma/hca: 2                          # SR-IOV 模式：独占 2 个 VF
+    # 或 rdma/rdma_shared_device_a: 1    # shared 模式：占一个共享位
 ```
 
 ---
