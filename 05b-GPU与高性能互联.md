@@ -395,13 +395,13 @@ data:
           mig-enabled: false
       all-1g.10gb:         # 全部切为 1g.10gb
         - devices: all
-          migenabled: true
-          migdevices:
+          mig-enabled: true
+          mig-devices:
             1g.10gb: 7
       all-3g.40gb:         # 全部切为 3g.40gb
         - devices: all
-          migenabled: true
-          migdevices:
+          mig-enabled: true
+          mig-devices:
             3g.40gb: 2
 
 # 通过 Node Label 触发切分
@@ -1089,13 +1089,16 @@ GPU Direct RDMA:
 ### PyTorch DDP（Distributed Data Parallel）
 
 ```python
+import os
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # 1. 初始化分布式环境（NCCL 后端 = GPU 通信）
 dist.init_process_group(backend='nccl')
-local_rank = dist.get_rank()
+# 注意：多机多卡训练时，dist.get_rank() 是全局 rank（0 ~ N-1），
+# 而 torch.cuda.set_device() 需要本机内的卡号 LOCAL_RANK（0 ~ 7）
+local_rank = int(os.environ["LOCAL_RANK"])
 torch.cuda.set_device(local_rank)
 
 # 2. 创建模型并包装为 DDP

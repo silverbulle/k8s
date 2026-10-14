@@ -2,15 +2,16 @@
 
 CRD（Custom Resource Definition）是 K8s 最强大的扩展机制之一。它允许你定义自己的资源类型，让 K8s 像管理内置资源（Deployment、Service）一样管理你的自定义资源。
 
-## 为什么需要 CRD
+## 为什么需要 CRD（以及它与 Helm / Kustomize 的边界）
 
-K8s 内置资源（Pod、Deployment、Service 等）覆盖了通用场景，但实际业务中经常遇到：
+K8s 内置资源（Pod、Deployment、Service 等）覆盖了通用场景，但在工程实践中我们经常遇到两类不同层次的痛点：
 
-- **重复组合**：每次部署 Web 应用都要写 Deployment + Service + Ingress + HPA 四个 YAML
-- **业务抽象缺失**：没有 "数据库集群"、"消息队列" 这样的高层概念
-- **运维逻辑无法编码**：备份策略、故障切换、证书轮换等运维知识只存在于人脑中
+1. **配置复用与多环境差异（Day-1 部署问题）**：每次部署 Web 应用都要写 Deployment + Service + Ingress + HPA 多个 YAML，且 dev/staging/prod 环境只有镜像标签或副本数不同。
+2. **领域抽象缺失与复杂运维自动化（Day-2 运维问题）**：K8s 原生没有“主从数据库集群”、“分布式消息队列”、“TLS 证书生命周期”这样的高层领域对象；诸如主从故障切换、在线扩缩容重平衡、定时全量/增量备份、证书到期前自动续签等运维逻辑（专家经验）无法仅靠静态 YAML 描述。
 
-CRD 让你**把运维知识编码为 K8s 资源**，通过声明式 API 和自动化控制循环来管理。
+> **💡 核心选型边界：别为了“少写几个 YAML”而过度设计 Operator！**
+> - 如果你的诉求只是**把多个 YAML 打包复用、按环境替换参数**（90% 的无状态业务应用），直接用 **Kustomize** 或 **Helm** 即可（详见 [06a-应用打包与多环境管理](06a-应用打包与多环境管理.md)），无需编写任何 Go 代码。
+> - 只有当你需要**让集群具备持续的、感知业务状态的自动化运维能力（Day-2 Operations）**，或者要向平台用户暴露极简的高层声明式领域 API（如 PaaS 平台内部的 `WebApp`、`MySQLCluster`）时，才需要通过 **CRD + Controller（即 Operator 模式）** 把人类的运维知识编码进控制循环。
 
 ---
 
@@ -760,4 +761,4 @@ func (r *WebAppReconciler) reconcileDelete(ctx context.Context, webapp *examplev
 | **Finalizer** | 删除前的清理钩子，用于处理外部资源 |
 | **kubebuilder** | Operator 开发脚手架工具 |
 
-**回到目录：[README](README.md)** | **相关章节：[01-控制平面组件](01-控制平面组件.md)**
+**上一章：[01-控制平面组件](01-控制平面组件.md)** | **下一章：[01b-安全与证书体系](01b-安全与证书体系.md)** →

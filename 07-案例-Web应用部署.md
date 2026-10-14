@@ -486,4 +486,4 @@ kubectl rollout undo deployment/backend -n webapp
 | Ingress | HTTP 路由 + TLS 终止 |
 | HPA | 基于 CPU 的自动水平伸缩 |
 
-**下一章：[08-案例-有状态服务](08-案例-有状态服务.md)** →
+**上一章：[06a-应用打包与多环境管理](06a-应用打包与多环境管理.md)** | **下一章：[08-案例-有状态服务](08-案例-有状态服务.md)** →
