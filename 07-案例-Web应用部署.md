@@ -121,22 +121,25 @@ spec:
           limits:
             cpu: "500m"
             memory: "256Mi"
+        # 生产防雪崩原则：Readiness 与 Liveness 端点务必分离！
+        # Readiness 检查下游依赖（如 Redis/DB 连接池是否就绪），失败仅摘除流量
         readinessProbe:
           httpGet:
-            path: /api/health
+            path: /api/health/ready
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
+        # Liveness 仅检查本进程是否假死，绝不检查外部下游依赖（否则 Redis 抖动会导致所有后端 Pod 被杀重启雪崩）
         livenessProbe:
           httpGet:
-            path: /api/health
+            path: /api/health/live
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 20
           failureThreshold: 3
         startupProbe:
           httpGet:
-            path: /api/health
+            path: /api/health/live
             port: 8080
           failureThreshold: 30
           periodSeconds: 5
